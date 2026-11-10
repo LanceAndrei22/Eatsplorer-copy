@@ -96,7 +96,174 @@ Two separate Python virtual environments are required due to a `pydantic` v1/v2 
 
 ---
 
+## Demo-Only Quick Start (Windows)
+
+The shortest path to running Eatsplorer locally for a live demo or screen recording. It skips everything that is not needed to *run* the system: model training, the dataset, Ngrok, and the local PyTorch/transformers stack (ABSA inference runs on the hosted Hugging Face Space instead). Verified on Windows with VS Code and PowerShell.
+
+> **Folder names:** in this repository the folders are `chatbot_git`, `web_backend_git` and `web_frontend_git`. The full setup further below calls them `chatbot`, `backend` and `frontend`.
+
+### What you need
+
+**Files:** only the three folders above. You can ignore `Training Scripts and Dataset`.
+
+| Requirement | Notes |
+|---|---|
+| Python **3.10** | For the chatbot. RASA 3.6 does not support 3.11+. Install alongside other versions, leave "Add to PATH" unchecked, and call it with `py -3.10`. Verify with `py -3.10 --version`. |
+| Python 3.11 (or 3.10) | For the backend. The demo ran on 3.11 with current package versions. |
+| Node.js 18+ | For the frontend. |
+| Trained RASA model | Download the `.tar.gz` from the [Rasa_Chatbot_Model](https://huggingface.co/Ehemjayy/Rasa_Chatbot_Model/tree/main) repo. This lets you skip `rasa train`. |
+| SerpAPI key | Optional. Only the live-reviews feature needs it. |
+| Internet | The backend calls the Hugging Face Space and SerpAPI. |
+
+### 1. Place the trained model
+
+Put the model file, **without extracting it**, in a new `models` folder:
+
+```
+chatbot_git/
+└── models/
+    └── 20260512-143647-corn-segue.tar.gz
+```
+
+If you would rather build it yourself, run `rasa train` inside `chatbot_git` (several minutes) instead.
+
+### 2. Edit the code
+
+1. `web_backend_git/hf_absa.py`: replace the placeholder with the Space ID.
+   ```python
+   SPACE_ID = "Ehemjayy/EATSPLORER"
+   ```
+2. `web_backend_git/live_reviews.py`: paste your SerpAPI key into `SERPAPI_API_KEY`. In this copy of the code the key is read from this line, **not** from `.env`. Never commit or screen-share this file with a real key in it.
+3. *Only if your network intercepts HTTPS* (you see `CERTIFICATE_VERIFY_FAILED`): add these two lines to the top of `web_backend_git/main.py`, after the opening docstring and before `from fastapi import ...`.
+   ```python
+   import truststore
+   truststore.inject_into_ssl()
+   ```
+
+No `.env` file is needed for the demo. The backend defaults to RASA at `http://localhost:5005`.
+
+### 3. One-time setup
+
+Run from the project root (the folder containing the three project folders).
+
+**Chatbot environment (Python 3.10):**
+
+```powershell
+py -3.10 -m venv venv_chatbot
+venv_chatbot\Scripts\activate
+pip install "setuptools==65.5.0" wheel
+pip install rasa==3.6.20 spacy==3.8.7 pandas requests
+pip install "setuptools==80.9.0"
+python -m spacy download en_core_web_lg
+deactivate
+```
+
+The `setuptools` pins matter. A brand-new `setuptools` breaks a RASA dependency build, and one that is too new no longer ships `pkg_resources`, which RASA imports. The install takes 5 to 15 minutes, and the spaCy model is about 400 MB.
+
+**Backend environment:**
+
+```powershell
+py -3.11 -m venv venv_web
+venv_web\Scripts\activate
+pip install fastapi uvicorn httpx python-dotenv pandas gradio_client
+deactivate
+```
+
+`torch`, `transformers`, `scikit-learn` and `emoji` are not needed here. ABSA runs on the Hugging Face Space.
+
+**Frontend:**
+
+```powershell
+cd web_frontend_git
+npm install
+cd ..
+```
+
+The `npm audit` vulnerability warnings can be ignored for a local demo. Do not run `npm audit fix --force`.
+
+### 4. Launch everything with one file
+
+Before launching, open the [Hugging Face Space](https://huggingface.co/spaces/Ehemjayy/EATSPLORER) and wait for it to say "Running". Free Spaces go to sleep, and live reviews fail while it is asleep.
+
+Save this as `start_eatsplorer.bat` in the project root and double-click it. If your model has a different filename, change it in the first line.
+
+```bat
+@echo off
+set "ROOT=%~dp0"
+
+start "RASA server" /D "%ROOT%chatbot_git" cmd /k ""%ROOT%venv_chatbot\Scripts\rasa.exe" run --enable-api --cors * --port 5005 --model models\20260512-143647-corn-segue.tar.gz"
+
+start "RASA actions" /D "%ROOT%chatbot_git" cmd /k ""%ROOT%venv_chatbot\Scripts\rasa.exe" run actions --port 5055"
+
+start "Backend" /D "%ROOT%web_backend_git" cmd /k ""%ROOT%venv_web\Scripts\python.exe" -m uvicorn main:app --port 8000"
+
+start "Frontend" /D "%ROOT%web_frontend_git" cmd /k "npm run dev"
+
+timeout /t 25 >nul
+start http://localhost:5173
+```
+
+Four windows open and the browser loads `http://localhost:5173` after about 25 seconds. RASA takes about a minute to finish loading, so wait before the first chat message. To stop everything, close the four windows.
+
+| Window | Port | Ready when it shows |
+|---|---|---|
+| RASA server | 5005 | `Rasa server is up and running` |
+| RASA actions | 5055 | `Action endpoint is up and running on http://0.0.0.0:5055` |
+| Backend | 8000 | `connected to space: Ehemjayy/EATSPLORER` |
+| Frontend | 5173 | `VITE ... ready` |
+
+Quick check: `http://localhost:8000/api/health` should report 89 restaurants loaded.
+
+### 5. Demo walkthrough
+
+1. **Restaurant Explorer (left panel):** use **Sort by aspect** to re-rank by Service, Food Quality and so on. Switch **All Time** to **By Month** and pick a month.
+2. **Restaurant card:** shows the five aspect scores and the number of reviews behind them.
+3. **Chatbot (right panel):** click the suggestion chips, for example *"Top 3 restaurants with best food quality"* and *"Budget-friendly café with great ambiance"*.
+4. **Live reviews:** click *"Latest review for Starbucks"* or the **🔴 Live Reviews** button on a card. Reviews are fetched from Google Maps through SerpAPI, and each one is scored per aspect by the ABSA model on Hugging Face. This takes a few seconds.
+
+**Data coverage:** the monthly scores run from **January 2024 to March 2026**.
+
+### 6. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `CERTIFICATE_VERIFY_FAILED` during `pip install` | Your network intercepts HTTPS. Pip retries and usually gets through. |
+| `CERTIFICATE_VERIFY_FAILED` / `failed to connect to gradio space` in the backend | Add the `truststore` lines from step 2, or try a different network such as a phone hotspot. |
+| `canonicalize_version() got an unexpected keyword argument 'strip_trailing_zero'` while installing RASA | `setuptools` is too new. Run the `setuptools==65.5.0` and `wheel` install first, as in step 3. |
+| `ModuleNotFoundError: No module named 'pkg_resources'` when starting RASA | In `venv_chatbot`, run `pip install "setuptools==80.9.0"`. |
+| Live reviews hang or error | The Hugging Face Space is asleep (open its page and wait), `SPACE_ID` is wrong, or the SerpAPI key is missing or invalid. |
+| *"I don't have enough data for \<month\> yet"* | "Right now", "this month" and "currently" route to the best-by-month feature and fall back to the previous month. Ask without those words, e.g. *"Best restaurants in Legazpi City overall"*, or choose a month up to March 2026. |
+| Chat error on the first message | RASA is still loading. Wait about a minute and retry. |
+| Port already in use | An old server is still running. Close all windows, or find the process with `netstat -ano \| findstr "5005 5055 8000 5173"` and stop it with `taskkill /PID <id> /F`. |
+| New VS Code terminals show `(venv_chatbot)` | Harmless. VS Code auto-activates the selected interpreter. The `.bat` file does not depend on it. |
+
+### 7. Cleaning up
+
+Close all windows and VS Code first, then run these in a normal PowerShell window (not inside VS Code).
+
+```powershell
+# Delete the project, including both virtual environments and node_modules
+cd C:\Users\<you>\Desktop
+Remove-Item -Recurse -Force Eatsplorer
+
+# Delete leftover caches
+Remove-Item "$env:LOCALAPPDATA\pip\Cache" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:LOCALAPPDATA\npm-cache" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.config\rasa" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.matplotlib" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.cache\huggingface" -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+Then delete the model `.tar.gz` and any ZIP from Downloads, empty the Recycle Bin, and uninstall Python 3.10 (and Node.js, if you installed it only for this) from Settings > Apps.
+
+To keep the source but free the space, delete only `venv_chatbot`, `venv_web` and `web_frontend_git\node_modules`. Virtual environments cannot be moved, so rebuild them with step 3 if you need them again.
+
+---
+
 ## Local Installation and Deployment
+
+> **Only need to run it for a demo?** Use the [Demo-Only Quick Start (Windows)](#demo-only-quick-start-windows) above. The steps below are the full developer setup, including model training and Ngrok. Replace `chatbot`, `backend` and `frontend` in the commands with the actual folder names `chatbot_git`, `web_backend_git` and `web_frontend_git`.
 
 ### Prerequisites
 
